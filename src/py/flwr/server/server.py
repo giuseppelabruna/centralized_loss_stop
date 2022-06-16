@@ -31,6 +31,7 @@ from flwr.common import (
     Scalar,
 )
 from flwr.common.logger import log
+from flwr.common.typing import GetParametersIns
 from flwr.server.client_manager import ClientManager
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.history import History
@@ -99,38 +100,49 @@ class Server:
         log(INFO, "FL starting")
         start_time = timeit.default_timer()
 
+        #-----------------------------------------------------------------------------------------------------------------------------------
+        #-----------------------------------------------------------------------------------------------------------------------------------
+        #-----------------------------------------------------------------------------------------------------------------------------------
+        stop = 0
         for current_round in range(1, num_rounds + 1):
             # Train model and replace previous global model
-            res_fit = self.fit_round(rnd=current_round, timeout=timeout)
-            if res_fit:
-                parameters_prime, _, _ = res_fit  # fit_metrics_aggregated
-                if parameters_prime:
-                    self.parameters = parameters_prime
+            if stop == False:                   # stop the FL if the val_loss improvement is too small
+                res_fit = self.fit_round(rnd=current_round, timeout=timeout)
+                _, metrics_aggregated, _ = res_fit  # update stop value
+                if metrics_aggregated[-1][1].keys() == ['stop'] :
+                    log(INFO, "-------------- stop salvato --------------")
+                    stop = metrics_aggregated[1][-1][1]['stop']
+                if res_fit:
+                    parameters_prime, _, _, _ = res_fit  # fit_metrics_aggregated
+                    if parameters_prime:
+                        self.parameters = parameters_prime
 
-            # Evaluate model using strategy implementation
-            res_cen = self.strategy.evaluate(parameters=self.parameters)
-            if res_cen is not None:
-                loss_cen, metrics_cen = res_cen
-                log(
-                    INFO,
-                    "fit progress: (%s, %s, %s, %s)",
-                    current_round,
-                    loss_cen,
-                    metrics_cen,
-                    timeit.default_timer() - start_time,
-                )
-                history.add_loss_centralized(rnd=current_round, loss=loss_cen)
-                history.add_metrics_centralized(rnd=current_round, metrics=metrics_cen)
-
-            # Evaluate model on a sample of available clients
-            res_fed = self.evaluate_round(rnd=current_round, timeout=timeout)
-            if res_fed:
-                loss_fed, evaluate_metrics_fed, _ = res_fed
-                if loss_fed:
-                    history.add_loss_distributed(rnd=current_round, loss=loss_fed)
-                    history.add_metrics_distributed(
-                        rnd=current_round, metrics=evaluate_metrics_fed
+                # Evaluate model using strategy implementation
+                res_cen = self.strategy.evaluate(parameters=self.parameters)
+                if res_cen is not None:
+                    loss_cen, metrics_cen = res_cen
+                    log(
+                        INFO,
+                        "fit progress: (%s, %s, %s, %s)",
+                        current_round,
+                        loss_cen,
+                        metrics_cen,
+                        timeit.default_timer() - start_time,
                     )
+                    history.add_loss_centralized(rnd=current_round, loss=loss_cen)
+                    history.add_metrics_centralized(rnd=current_round, metrics=metrics_cen)
+
+                # Evaluate model on a sample of available clients
+                res_fed = self.evaluate_round(rnd=current_round, timeout=timeout)
+                if res_fed:
+                    loss_fed, evaluate_metrics_fed, _ = res_fed
+                    if loss_fed:
+                        history.add_loss_distributed(rnd=current_round, loss=loss_fed)
+                        history.add_metrics_distributed(
+                            rnd=current_round, metrics=evaluate_metrics_fed
+                        )
+            else:
+                log(INFO, "Round %s with no computations", current_round)
 
         # Bookkeeping
         end_time = timeit.default_timer()
@@ -223,8 +235,8 @@ class Server:
         # Aggregate training results
         aggregated_result: Tuple[
             Optional[Parameters],
-            Dict[str, Scalar],
-        ] = self.strategy.aggregate_fit(rnd, results, failures)
+            Dict[str, Scalar]
+        ] = self.strategy.aggregate_fit(rnd, results, failures)  
 
         parameters_aggregated, metrics_aggregated = aggregated_result
         return parameters_aggregated, metrics_aggregated, (results, failures)
@@ -255,7 +267,8 @@ class Server:
         # Get initial parameters from one of the clients
         log(INFO, "Requesting initial parameters from one random client")
         random_client = self._client_manager.sample(1)[0]
-        get_parameters_res = random_client.get_parameters(timeout=timeout)
+        ins = GetParametersIns(config={})
+        get_parameters_res = random_client.get_parameters(ins=ins, timeout=timeout)
         log(INFO, "Received initial parameters from one random client")
         return get_parameters_res.parameters
 
